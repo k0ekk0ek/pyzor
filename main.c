@@ -103,7 +103,12 @@ pyzor_foreach_callback (GMimeObject *parent, GMimeObject *part, gpointer user_da
 		    printf ("stream empty\n");
 		    break;
 		  } else {
-		    pyzor_digest_update (digest, buf, (size_t)cnt, (cnt < BUFLEN ? 1 : 0));
+//fprintf (stderr, "MIME: %.*s\n", cnt, buf);
+		    int err = pyzor_digest_update (digest, buf, (size_t)cnt, (cnt < BUFLEN ? 1 : 0));
+		    if (err != 0) {
+		      fprintf (stderr, "error: %s\n", strerror (err));
+		      return;
+		    }
 		    //printf ("%.*s", cnt, buf);
 		    //if (cnt < BUFLEN)
 		    //  break;
@@ -136,13 +141,18 @@ main (int argc, char *argv[])
 	/* parse the message */
 	message = parse_message (fd);
 
-  pyzor_digest_t digest;
-  pyzor_digest_init (&digest);
+  pyzor_digest_t *digest;
+  int err;
+//  pyzor_digest_init (&digest);
+  if ((err = pyzor_digest_create (&digest)) != 0) {
+    fprintf (stderr, "error: %s\n", strerror (err));
+    return (1);
+  }
 
-  g_mime_message_foreach (message, pyzor_foreach_callback, (void *)&digest);
+  g_mime_message_foreach (message, pyzor_foreach_callback, (void *)digest);
 
   char buf[1024];
-  pyzor_digest_finish (buf, 1024, &digest);
+  pyzor_digest_final (buf, 1024, digest);
 
   printf ("digest: %s\n", buf);
 

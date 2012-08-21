@@ -1,7 +1,8 @@
 #include <assert.h>
 #include <errno.h>
 #include <limits.h>
-#include <openssl/sha.h>
+//#include <openssl/sha.h>
+#include <glib.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -24,11 +25,75 @@
 
 #define PYZOR_SIZE_MAX (SIZE_MAX - PYZOR_DELIM_LEN)
 
-      // FIXME: we shouldn't rely on g_ascii_isspace... just copy it from
-      //        what I have in ixhash right now...
-      //        we'll add a compile time option later so that we can overwrite
-      //        it when
-      //if (pos == len || g_ascii_isspace (str[pos])) {
+/* functions like the ones in <ctype.h> that are not affected by locale.
+   copied directly from GLib. */
+static const unsigned int pyzor_ascii_table[256] = {
+  0x004, 0x004, 0x004, 0x004, 0x004, 0x004, 0x004, 0x004,
+  0x004, 0x104, 0x104, 0x004, 0x104, 0x104, 0x004, 0x004,
+  0x004, 0x004, 0x004, 0x004, 0x004, 0x004, 0x004, 0x004,
+  0x004, 0x004, 0x004, 0x004, 0x004, 0x004, 0x004, 0x004,
+  0x140, 0x0d0, 0x0d0, 0x0d0, 0x0d0, 0x0d0, 0x0d0, 0x0d0,
+  0x0d0, 0x0d0, 0x0d0, 0x0d0, 0x0d0, 0x0d0, 0x0d0, 0x0d0,
+  0x459, 0x459, 0x459, 0x459, 0x459, 0x459, 0x459, 0x459,
+  0x459, 0x459, 0x0d0, 0x0d0, 0x0d0, 0x0d0, 0x0d0, 0x0d0,
+  0x0d0, 0x653, 0x653, 0x653, 0x653, 0x653, 0x653, 0x253,
+  0x253, 0x253, 0x253, 0x253, 0x253, 0x253, 0x253, 0x253,
+  0x253, 0x253, 0x253, 0x253, 0x253, 0x253, 0x253, 0x253,
+  0x253, 0x253, 0x253, 0x0d0, 0x0d0, 0x0d0, 0x0d0, 0x0d0,
+  0x0d0, 0x473, 0x473, 0x473, 0x473, 0x473, 0x473, 0x073,
+  0x073, 0x073, 0x073, 0x073, 0x073, 0x073, 0x073, 0x073,
+  0x073, 0x073, 0x073, 0x073, 0x073, 0x073, 0x073, 0x073,
+  0x073, 0x073, 0x073, 0x0d0, 0x0d0, 0x0d0, 0x0d0, 0x004
+  /* the upper 128 are all zeroes */
+};
+
+typedef enum {
+  PYZOR_ASCII_ALNUM  = 1 << 0,
+  PYZOR_ASCII_ALPHA  = 1 << 1,
+  PYZOR_ASCII_CNTRL  = 1 << 2,
+  PYZOR_ASCII_DIGIT  = 1 << 3,
+  PYZOR_ASCII_GRAPH  = 1 << 4,
+  PYZOR_ASCII_LOWER  = 1 << 5,
+  PYZOR_ASCII_PRINT  = 1 << 6,
+  PYZOR_ASCII_PUNCT  = 1 << 7,
+  PYZOR_ASCII_SPACE  = 1 << 8,
+  PYZOR_ASCII_UPPER  = 1 << 9,
+  PYZOR_ASCII_XDIGIT = 1 << 10
+} pyzor_ascii_type_t;
+
+#define pyzor_isalnum(c) \
+  ((pyzor_ascii_table[(unsigned char) (c)] & PYZOR_ASCII_ALNUM) != 0)
+
+#define pyzor_isalpha(c) \
+  ((pyzor_ascii_table[(unsigned char) (c)] & PYZOR_ASCII_ALPHA) != 0)
+
+#define pyzor_iscntrl(c) \
+  ((pyzor_ascii_table[(unsigned char) (c)] & PYZOR_ASCII_CNTRL) != 0)
+
+#define pyzor_isdigit(c) \
+  ((pyzor_ascii_table[(unsigned char) (c)] & PYZOR_ASCII_DIGIT) != 0)
+
+#define pyzor_isgraph(c) \
+  ((pyzor_ascii_table[(unsigned char) (c)] & PYZOR_ASCII_GRAPH) != 0)
+
+#define pyzor_islower(c) \
+  ((pyzor_ascii_table[(unsigned char) (c)] & PYZOR_ASCII_LOWER) != 0)
+
+#define pyzor_isprint(c) \
+  ((pyzor_ascii_table[(unsigned char) (c)] & PYZOR_ASCII_PRINT) != 0)
+
+#define pyzor_ispunct(c) \
+  ((pyzor_ascii_table[(unsigned char) (c)] & PYZOR_ASCII_PUNCT) != 0)
+
+#define pyzor_isspace(c) \
+  ((pyzor_ascii_table[(unsigned char) (c)] & PYZOR_ASCII_SPACE) != 0)
+
+#define pyzor_isupper(c) \
+  ((pyzor_ascii_table[(unsigned char) (c)] & PYZOR_ASCII_UPPER) != 0)
+
+#define pyzor_isxdigit(c) \
+  ((pyzor_ascii_table[(unsigned char) (c)] & PYZOR_ASCII_XDIGIT) != 0)
+
 
 typedef enum pyzor_phase pyzor_phase_t;
 
@@ -59,14 +124,15 @@ struct pyzor_digest {
 };
 
 static int pyzor_digest_grow (pyzor_digest_t *, size_t);
-static int pyzor_digest_scrub (pyzor_digest_t *);
-static int pyzor_digest_part_update (pyzor_digest_t *);
+static void pyzor_digest_scrub (pyzor_digest_t *);
+static int pyzor_digest_part_update (pyzor_digest_t *, pyzor_phase_t,
+  const unsigned char *, size_t, ssize_t, ssize_t);
 static int pyzor_digest_part_final (pyzor_digest_t *);
 static int pyzor_digest_part_term (pyzor_digest_t *);
 static void pyzor_digest_part_strip (pyzor_digest_t *); /* strip HTML tags */
-static int pyzor_digest_part_forget (pyzor_digest_t *);
-static int pyzor_digest_pre_update (pyzor_digest_t *, const void *, size_t,
-  int, size_t *);
+static int pyzor_digest_part_forget (pyzor_digest_t *, pyzor_phase_t);
+static int pyzor_digest_pre_update (pyzor_digest_t *, const unsigned char *,
+  size_t, int, size_t *);
 
 int
 pyzor_digest_create (pyzor_digest_t **digest)
@@ -77,7 +143,7 @@ pyzor_digest_create (pyzor_digest_t **digest)
   assert (digest);
 
   if (! (ptr = calloc (1, sizeof (pyzor_digest_t))) ||
-      ! (err = pyzor_digest_grow (ptr, 0)))
+        (err = pyzor_digest_grow (ptr, 0)))
   {
     pyzor_digest_destroy (ptr);
     return (ENOMEM);
@@ -111,14 +177,14 @@ pyzor_digest_grow (pyzor_digest_t *digest, size_t len)
 
   assert (digest);
 
-  if (len + PYZOR_DIGEST_LEN < digest->len - digest->cnt)
+  if (len + PYZOR_DELIM_LEN < digest->len - digest->cnt)
     return (0);
   pyzor_digest_scrub (digest);
-  if (len + PYZOR_DIGEST_LEN < digest->len - digest->cnt)
+  if (len + PYZOR_DELIM_LEN < digest->len - digest->cnt)
     return (0);
 
   /* decide how much the line buffer should grow */
-  a_len = digest->len > len ? digest->len : len;
+  a_len = (digest->len > len) ? digest->len : len;
   if (a_len >= PYZOR_SIZE_MAX)
     return (EOVERFLOW);
   else if (a_len > PYZOR_SIZE_MAX - a_len)
@@ -180,8 +246,8 @@ pyzor_digest_scrub (pyzor_digest_t *digest)
 
 static int
 pyzor_digest_part_update (pyzor_digest_t *digest,
-                          pyzor_digest_phase_t phase,
-                          const void *str,
+                          pyzor_phase_t phase,
+                          const unsigned char *str,
                           size_t len,
                           ssize_t lt, /* HTML tag open */
                           ssize_t gt) /* HTML tag close */
@@ -235,7 +301,7 @@ pyzor_digest_part_final (pyzor_digest_t *digest)
     memcpy (digest->buf + off, &len, sizeof (size_t));
     /* update line counter only on first invocation */
     if (! digest->tot)
-      digest->cnt = 1;
+      digest->nth = 1;
     digest->tot++;
     /* no rewind */
     digest->delim = digest->lim;
@@ -244,10 +310,13 @@ pyzor_digest_part_final (pyzor_digest_t *digest)
     digest->lim = digest->delim;
   }
 
+  if ((err = pyzor_digest_grow (digest, 0)) != 0)
+    return (err);
   if ((err = pyzor_digest_part_term (digest)) != 0)
     return (err);
 
-  digest->lim = digest->delim + PYZOR_DIGEST_LEN;
+  digest->cnt += PYZOR_DELIM_LEN;
+  digest->lim = digest->delim + PYZOR_DELIM_LEN;
   digest->off = digest->lim;
   digest->lt  = 0;
   digest->gt  = 0;
@@ -259,6 +328,8 @@ pyzor_digest_part_final (pyzor_digest_t *digest)
 static int
 pyzor_digest_part_term (pyzor_digest_t *digest)
 {
+  int err;
+
   assert (digest);
 
   if (digest->len - digest->cnt < PYZOR_DELIM_LEN)
@@ -284,12 +355,13 @@ pyzor_digest_part_strip (pyzor_digest_t *digest)
       len = digest->lim - lim;
 
       memmove (digest->buf + off, digest->buf + lim, len);
+
       /* update counters */
       digest->lim -= (lim - off);
-      if (digest->off > digest->lt)
+      if (digest->off >= digest->lt)
         digest->off = digest->lim;
       /* find open or close tags located in tail */
-      pos = digest->lt;
+      pos = off;
       digest->lt = 0;
       digest->gt = 0;
 
@@ -309,7 +381,7 @@ pyzor_digest_part_strip (pyzor_digest_t *digest)
 }
 
 static int
-pyzor_digest_part_forget (pyzor_digest_t *digest, pyzor_digest_phase_t phase)
+pyzor_digest_part_forget (pyzor_digest_t *digest, pyzor_phase_t phase)
 {
   int err;
 
@@ -328,13 +400,13 @@ pyzor_digest_part_forget (pyzor_digest_t *digest, pyzor_digest_phase_t phase)
     digest->gt = 0;
   digest->phase = phase;
 
-  err = pyzor_digest_part_term (digest)
+  err = pyzor_digest_part_term (digest);
   return (err);
 }
 
 static int
 pyzor_digest_pre_update (pyzor_digest_t *digest,
-                         const void *str,
+                         const unsigned char *str,
                          size_t len,
                          int eom,
                          size_t *num)
@@ -342,6 +414,7 @@ pyzor_digest_pre_update (pyzor_digest_t *digest,
   int err;
   size_t cnt, off, pos;
   ssize_t lt, gt;
+  pyzor_phase_t phase;
 
   assert (digest);
   assert (str);
@@ -368,7 +441,7 @@ pyzor_digest_pre_update (pyzor_digest_t *digest,
         else if (! eom)
           phase = pyzor_phase_space;
 
-        if ((err = pyzor_digest_part_update (digest, phase, str, pos, lg, gt)))
+        if ((err = pyzor_digest_part_update (digest, phase, str, pos, lt, gt)))
           return (err);
 
         if (phase == pyzor_phase_none) {
@@ -388,7 +461,7 @@ pyzor_digest_pre_update (pyzor_digest_t *digest,
         } else if (str[pos] == '<') {
           lt = pos;
         } else if (str[pos] == '>') {
-          lt = pos;
+          gt = pos;
         } else if (str[pos] == '@') {
           phase = pyzor_phase_delim;
         } else if (str[pos] == ':' && phase == pyzor_phase_alpha) {
@@ -409,6 +482,7 @@ pyzor_digest_update (pyzor_digest_t *digest,
                      size_t len, /* number of bytes in str */
                      int eom) /* indicates end of mime part */
 {
+  int err;
   pyzor_phase_t phase, phase_ii;
   size_t off, pos;
   ssize_t lt, gt;
@@ -420,6 +494,7 @@ pyzor_digest_update (pyzor_digest_t *digest,
     return (err);
 
   phase = digest->phase;
+  off = 0;
   lt = -1;
   gt = -1;
 
@@ -435,8 +510,12 @@ pyzor_digest_update (pyzor_digest_t *digest,
           phase == pyzor_phase_alpha     ||
           phase == pyzor_phase_delim)
       {
-        if ((err = pyzor_digest_part_update (digest, phase_ii, str+off, pos-off, lt-off, gt-off)))
+        if ((err = pyzor_digest_part_update (digest, phase_ii, str+off, pos-off, (lt >= 0 ? lt-off : lt), (gt >= 0 ? gt-off : gt))))
           return (err);
+      }
+
+      if (phase_ii == pyzor_phase_none)
+      {
         if ((err = pyzor_digest_part_final (digest)))
           return (err);
       }
@@ -460,7 +539,7 @@ pyzor_digest_update (pyzor_digest_t *digest,
         if (phase == pyzor_phase_none || phase == pyzor_phase_space) {
           off = pos;
           if (pyzor_isalpha (str[pos]))
-            phase = pyzor_phase_aplha;
+            phase = pyzor_phase_alpha;
           else
             phase = pyzor_phase_non_space;
         } else if (phase == pyzor_phase_alpha) {
@@ -471,7 +550,7 @@ pyzor_digest_update (pyzor_digest_t *digest,
         if (str[pos] == '<' && lt == -1)
           lt = pos;
         else if (str[pos] == '>' && gt == -1)
-          lt = pos;
+          gt = pos;
       }
     }
   }
@@ -499,9 +578,11 @@ pyzor_digest_final (unsigned char *str, size_t len, pyzor_digest_t *digest)
 
   if (digest->tot > PYZOR_LINES_ATOMIC) {
     off = (20.0 * digest->tot) / 100.0;
+    off++;
     offs[0][0] = off;
     offs[0][1] = off + 2;
     off = (60.0 * digest->tot) / 100.0;
+    off++;
     offs[1][0] = off;
     offs[1][1] = off + 2;
   } else {
@@ -512,12 +593,14 @@ pyzor_digest_final (unsigned char *str, size_t len, pyzor_digest_t *digest)
   }
 //fprintf (stderr, "%d > %d, %d > %d\n", offs[0][0], offs[0][1], offs[1][0], offs[1][1]);
 cnt = digest->nth;
-//fprintf (stderr, "cnt: %d\n", cnt);
+//cnt++;
+fprintf (stderr, "tot: %d\n", digest->tot);
   for (pos = 0; cnt <= offs[1][1]; cnt++) {
-//fprintf (stderr, "cnt: %d\n", cnt);
+fprintf (stderr, "cnt: %d\n", cnt);
     //num = *(size_t *)digest->buf[pos];
-    memcpy (&num, digest->buf + pos, sizeof (size_t));
-    pos += inc;
+
+    memcpy (&num, digest->buf + pos + 1, sizeof (size_t));
+    pos += 1 + inc;
 
     if ((cnt >= offs[0][0] && cnt <= offs[0][1]) ||
         (cnt >= offs[1][0] && cnt <= offs[1][1]))
@@ -534,74 +617,4 @@ fprintf (stderr, "%s:%u: line: %.*s\n", __FILE__, __LINE__, num, digest->buf + p
   return (0);
   /* FIXME: implement destroy buffer etc etc */
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
